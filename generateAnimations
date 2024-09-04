@@ -1,0 +1,314 @@
+#!/bin/bash
+
+###################################################################################################
+#
+# generateAnimations: Recursively create .avi animations from .png files
+#
+# Written by: Michael F. Schigelone (mschigel) for Ford VI Water Management
+#
+# Version History:
+#     1.0.0 - 2020-10-05
+#           - Concept and creation of script
+#           - Added user-specified parameters for framrate, search path, and search string
+#           - Made output directory the parent directory of the .png file location
+#           - Added detailed help menu
+#
+#     1.0.1 - 2020-10-06
+#           - Improved REGEX to handle both integer and scientific file name suffixes (formats for
+#             STAR-CCM+ hardcopy per iteration, or per physical time), and made '_image_' optional
+#           - Added optional feature where the user can limit number of frames
+#           - Added safe feature for ffmpeg so images with an odd number in their resolutions will
+#             still work
+#
+#    1.1.0 - 2021-01-22
+#          - Added feature to control START FRAME and END FRAME
+#          - Fixed bug if one scene basename was identical to another one, with additional suffix
+#            ex: Scene_1, Scene_1_Copy
+#
+#    1.1.1 - 2021-04-28
+#          - Improved sort command to fix bug where 1.0e-00, 9.8e-1 were sorted out of order
+#          - Changed if statements for $ARG_FRAME_LIMIT and $ARG_FRAME_LIMIT_END to remove
+#            repeating code
+#          - Added /? in REGEX for FRAMES variable to handle preonlab image file format
+#
+#    1.1.2 - 2021-05-20
+#          - Fixed bug where script didn't work on PreonLab image files when executed inside of
+#            image directory
+#
+#    1.2.0 - 2021-06-15
+#          - Fixed bug where one unique image used with -f option was producing FRAMES array of
+#            zero length. Only try to create videos if # of frames is greater than 1.
+#          - Changed loglevel of ffmpeg to make it less verbose. Added information and status
+#            echo statements for better experience.
+#
+#    2.0.0 - 2021-06-22
+#          - Changed video codec to libx264, changed pixel format to yuv420p. Now, there's no need
+#            to create a temporary video, convert it, then delete the temporary. The initial video
+#            created is compatible with Windows Media Player and Microsoft PowerPoint.
+#          - Since it uses libx264, we can specify a CRF value to explicitly control the amount of
+#            compression, which has a direct impact on the video file side. This parameter has been
+#            added as a user control (-c).
+#
+###################################################################################################
+
+PROGRAM_NAME='generateAnimations'
+VERSION='2.0.0'
+
+bold=$(tput bold)
+normal=$(tput sgr0)
+
+FFMPEG_EXE='/apps/ffmpeg/bin/ffmpeg'
+
+# Initialize default argument values
+ARG_SEARCH='' # Default search string for .png files
+ARG_FRAMERATE=20 # argument for ffmpeg
+ARG_CRF=23 # argument for ffmpeg
+ARG_PATH=`pwd`
+ARG_HELP='false'
+ARG_FRAME_LIMIT=''
+ARG_FRAME_LIMIT_END=''
+ARG_FRAME_FREQ=1
+ARG_START_FRAME=''
+ARG_END_FRAME=''
+
+
+# Collect user-supplied arguments (if any)
+while getopts ":s:r:hm:n:f:i:j:c:" opt; do
+    case "${opt}" in
+        s) ARG_SEARCH="${OPTARG}" ;;
+	r) ARG_FRAMERATE="${OPTARG}" ;;
+	h) ARG_HELP='true' ;;
+	m) ARG_FRAME_LIMIT="${OPTARG}" ;;
+	n) ARG_FRAME_LIMIT_END="${OPTARG}" ;;
+	f) ARG_FRAME_FREQ="${OPTARG}" ;;
+	i) ARG_START_FRAME="${OPTARG}" ;;
+	j) ARG_END_FRAME="${OPTARG}" ;;
+	c) ARG_CRF="${OPTARG}" ;;
+        \?) echo "Warning: -${OPTARG} is an invalid option, ignoring..."
+		echo -e "Display help menu: $PROGRAM_NAME -h\n"	
+		;;
+        :) echo "Warning: The argument for option -${OPTARG} was omitted, resorting to default value..."
+		echo -e "Display help menu: $PROGRAM_NAME -h\n"
+		;;
+    esac
+done
+shift $((OPTIND -1))
+shopt -s globstar
+
+function help {
+	echo -e "$PROGRAM_NAME (Ford VI Water Management): v$VERSION\n"
+	echo -e "${bold}NAME${normal}"
+	echo -e "\t${bold}${PROGRAM_NAME}${normal}: Recursively create video animations\n"
+
+	echo -e "${bold}SYNOPSIS${normal}"
+	echo -e "\t${bold}${PROGRAM_NAME}${normal}"
+	echo -e "\t${bold}${PROGRAM_NAME}${normal} [OPTIONS]"
+	echo -e "\t${bold}${PROGRAM_NAME}${normal} [OPTIONS] DIRECTORY\n"
+
+	echo -e "${bold}DESCRIPTION${normal}"
+	echo -e "\t${bold}${PROGRAM_NAME}${normal} searches a given directory and its subdirectories for .png files and creates video animations, one per unique .png basename."
+	echo -e "\tBy default, the starting point of the search is the user's current directory, and the video framerate is 20. Although these can be overridden (see options)."
+	echo -e "\tUsage: ${bold}${PROGRAM_NAME}${normal} /absolute/path/to/directory"
+	echo -e "\t       ${bold}${PROGRAM_NAME}${normal} ./relative/path/to/directory"
+        echo -e "\t       ${bold}${PROGRAM_NAME}${normal} [OPTIONS] /absolute/path/to/directory"
+        echo -e "\t       ${bold}${PROGRAM_NAME}${normal} [OPTIONS] ./relative/path/to/directory\n"
+
+	echo -e "${bold}OPTIONS${normal}"
+	echo -e "    ${bold}Generic Program Information:${normal}"
+	echo -e "\t${bold}-h${normal}"
+	echo -e "\t    Display this help menu and exit.\n"
+
+        echo -e "    ${bold}Search Options And ffmpeg Parameters:${normal}"
+        echo -e "\t${bold}-r${normal}"
+        echo -e "\t    Video framerate (default is 20)"
+        echo -e "\t    Usage: ${bold}${PROGRAM_NAME}${normal} -r 30\n"
+
+        echo -e "\t${bold}-c${normal}"
+        echo -e "\t    Constant rate factor (CRF). Controls amount of compression for certain quality level. CRF values range from 0 to 51."
+        echo -e "\t    0: lossless, 23: default, 51: worst possible. Recommended range is 18-28."
+        echo -e "\t    Usage: ${bold}${PROGRAM_NAME}${normal} -c 18\n"
+
+        echo -e "\t${bold}-s${normal}"
+        echo -e "\t    Search string. A user may specify a search string for the .png file basename to narrow the search. The default is all files with .png extension."
+        echo -e "\t    Usage: ${bold}${PROGRAM_NAME}${normal} -s ImageFileBasename\n"
+
+        echo -e "\t${bold}-i${normal}"
+        echo -e "\t    Start frame (integers only). Searches for frame number at end of file name and excludes frames before this parameter."
+        echo -e "\t    Usage: ${bold}${PROGRAM_NAME}${normal} -i 1200\n"
+
+        echo -e "\t${bold}-j${normal}"
+        echo -e "\t    End frame (integers only). Searches for frame number at end of file name and excludes frames after this parameter."
+        echo -e "\t    Usage: ${bold}${PROGRAM_NAME}${normal} -j 2600\n"
+
+        echo -e "\t${bold}-m${normal}"
+        echo -e "\t    Number of frames (beginning). If applicable, the number frames can be limited to the first M .png files in the list."
+        echo -e "\t    Usage: ${bold}${PROGRAM_NAME}${normal} -m 50\n"
+
+        echo -e "\t${bold}-n${normal}"
+        echo -e "\t    Number of frames (end). If applicable, the number frames can be limited to the last N .png files in the list."
+        echo -e "\t    Usage: ${bold}${PROGRAM_NAME}${normal} -n 50\n"
+
+        echo -e "\t${bold}-f${normal}"
+        echo -e "\t    Frame frequency. If applicable, every 1/n files would be used for video creation."
+        echo -e "\t    Usage: ${bold}${PROGRAM_NAME}${normal} -f 5 (would use 1 out of every 5 image files)\n"
+}
+
+# Get remaining argument for path
+ARG_PATH=$1
+if [[ "${ARG_PATH}" = "" ]]; then
+	ARG_PATH=`pwd`
+fi
+
+if [[ ${ARG_HELP} = 'true' ]]; then
+	help
+	exit
+fi
+
+# Check if ffmpeg exists and is executable
+if [[ ! -x "${FFMPEG_EXE}" ]]; then
+    echo "Error: ffmpeg not executable or doesn't exist! Exiting..."
+    exit
+fi
+
+if [[ ! -d "${ARG_PATH}"  ]]; then
+    echo "Error: User-supplied path does not exist! Exiting..."
+    exit
+fi
+
+# Check to make sure arguments are valid
+if ! [[ "$ARG_FRAMERATE" =~ ^-?[0-9]+$ ]] 2> /dev/null ; then
+    echo "Error: Framerate must be integer! Exiting..."
+    exit
+fi
+
+if ! [[ "$ARG_CRF" =~ ^-?[0-9]+$ ]] 2> /dev/null ; then
+    echo "Error: CRF must be integer! Exiting..."
+    exit
+fi
+
+if [[ ! -z "$ARG_FRAME_LIMIT" ]]; then
+    if ! [[ "$ARG_FRAME_LIMIT" =~ ^-?[0-9]+$ ]] 2> /dev/null ; then
+        echo "Error: Frame limit must be integer! Exiting..."
+        exit
+    fi
+fi
+
+if [[ ! -z "$ARG_FRAME_LIMIT_END" ]]; then
+    if ! [[ "$ARG_FRAME_LIMIT_END" =~ ^-?[0-9]+$ ]] 2> /dev/null ; then
+        echo "Error: Frame limit must be integer! Exiting..."
+        exit
+    fi
+fi
+
+if ! [[ "$ARG_FRAME_FREQ" =~ ^-?[0-9]+$ ]] 2> /dev/null ; then
+    echo "Error: Frame frequency must be integer! Exiting..."
+    exit
+fi
+
+
+PATTERN=" |'"
+if [[ "$ARG_SEARCH" =~ "$PATTERN" ]] ; then
+    echo "Error: Search string should not contain spaces! Exiting..."
+    exit
+fi
+
+if [[ ! -z "$ARG_START_FRAME" ]]; then
+    if ! [[ "$ARG_START_FRAME" =~ ^-?[0-9]+$ ]] 2> /dev/null ; then
+        echo "Error: Start frame must be integer! Exiting..."
+        exit
+    fi
+fi
+
+if [[ ! -z "$ARG_END_FRAME" ]]; then
+    if ! [[ "$ARG_END_FRAME" =~ ^-?[0-9]+$ ]] 2> /dev/null ; then
+        echo "Error: End frame must be integer! Exiting..."
+        exit
+    fi
+fi
+
+# Get list of unique .png file names (after stripping trailing integers... should be one per scalar scene!)
+#PHOTOS=( $(find ${ARG_PATH} -maxdepth 2 -type f -name ${ARG_SEARCH}'*.png' | sed -e 's/_image_.*.png$//' | sort | uniq) )
+echo "Searching for image files with unique basename..."
+PHOTOS=( $(find ${ARG_PATH} -maxdepth 2 -type f -name ${ARG_SEARCH}'*.png' | xargs readlink -f | sed -r 's/_?(image)?_?[0-9]*(\.[0-9]+)?([eE][-+]?[0-9]+)?\.png$//' | sort | uniq) )
+echo ""
+
+# Convert series of .png files to .avi
+for i in ${PHOTOS[@]}; do
+	echo "Scene: ${i}"
+
+	OUTPUT_FILENAME=$(basename -- ${i})
+
+	echo "Output Filename: ${OUTPUT_FILENAME}"
+
+	if [[ -d ${i} ]]; then
+	    OUTPUT_DIR=${i}"/.."
+	else
+	    OUTPUT_DIR=$(dirname ${i})
+	    OUTPUT_DIR=${OUTPUT_DIR}"/.."
+	fi
+
+	echo "Output Directory: ${OUTPUT_DIR}"
+	
+	FRAMES=( $(find ${OUTPUT_DIR} -maxdepth 2 -type f -regextype posix-extended -regex "^.*${OUTPUT_FILENAME}/?_?(image)?_?[0-9]*(\.[0-9]+)?([eE][-+]?[0-9]+)?\.png$") )
+	
+	# Find location in string of iteration/timestep/physical time indicator
+	DEPTH=$(echo "${FRAMES[0]}" | tr '_' ' ' | wc -w)
+
+	# Sort
+	if [[ ${DEPTH} -gt 0 ]]; then
+	    FRAMES=( $(printf '%s\n' "${FRAMES[@]}" | sort -t'_' -g -k${DEPTH}) )
+	else
+	    FRAMES=( $(printf '%s\n' "${FRAMES[@]}" | sort -g) )
+	fi
+
+
+	if [[ ! -z "$ARG_FRAME_LIMIT" ]]; then
+	    FRAMES=( $(printf '%s\n' "${FRAMES[@]}" | head -n ${ARG_FRAME_LIMIT}) )
+        fi
+	if [[ ! -z "$ARG_FRAME_LIMIT_END" ]]; then
+            FRAMES=( $(printf '%s\n' "${FRAMES[@]}" | tail -n ${ARG_FRAME_LIMIT_END}) )
+	fi
+
+	# Delete frames prior to "start frame"
+	if [[ ! -z "$ARG_START_FRAME" ]]; then
+	    new_list=()
+	    for j in "${FRAMES[@]}"; do
+	        #frame=$(echo "${j}" | grep -Eo '[1-9][0-9]+' | tail -1)
+	        frame=$(echo "${j}" | grep -Eo '[1-9][0-9]+.png$' | cut -d '.' -f 1)
+	        if [[ ! $frame -lt $ARG_START_FRAME ]]; then
+	            new_list+=(${j})
+	        fi
+	    done
+	    FRAMES=("${new_list[@]}")
+	    unset new_list
+	    unset frame
+	fi
+
+	# Delete frames after "end frame"
+        if [[ ! -z "$ARG_END_FRAME" ]]; then
+            new_list=()
+            for j in "${FRAMES[@]}"; do
+                #frame=$(echo "${j}" | grep -Eo '[1-9][0-9]+' | tail -1)
+	        frame=$(echo "${j}" | grep -Eo '[1-9][0-9]+.png$' | cut -d '.' -f 1)
+                if [[ ! $frame -gt $ARG_END_FRAME ]]; then
+                    new_list+=(${j})
+                fi
+            done
+            FRAMES=("${new_list[@]}")
+            unset new_list
+	    unset frame
+        fi
+
+	FRAMES=( $(printf '%s\n' "${FRAMES[@]}" | awk "NR % ${ARG_FRAME_FREQ} == 0") )
+
+	if [ ${#FRAMES[@]} -gt 1 ]; then
+	    echo "Creating video [${OUTPUT_FILENAME}.avi]..."
+	    cat ${FRAMES[@]} | ${FFMPEG_EXE} -hide_banner -loglevel warning -stats -y -f image2pipe -framerate ${ARG_FRAMERATE} -i - -vcodec libx264 -pix_fmt yuv420p -crf ${ARG_CRF} -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2:color=white" ${OUTPUT_DIR}/${OUTPUT_FILENAME}.avi
+
+	else
+	    echo "Number of frames is zero or one, skipping..."	
+	fi
+
+	echo ""
+
+done

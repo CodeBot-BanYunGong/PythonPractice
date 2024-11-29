@@ -34,16 +34,13 @@ model += (
 
 
 # CAFC and NEV Constraints (Approximation for Non-Linear Terms)
-# Note:  These constraints are approximations due to the non-linearity introduced by division.
-#        For a more accurate solution, consider using a non-linear solver.
-
 qf_total = pulp.lpSum(qf[j] for j in range(2))
 model += qf_total >= 1  # Avoid division by zero
 
 # Approximate CAFC constraint
 CAFC_val = pulp.lpSum(FC[j] * qf[j] for j in range(2)) - k * TCAFC * qf_total
-model += CAFC_val <= b * qf_total # Linearization by multiplying with qf_total
-model += -CAFC_val <= b * qf_total # Linearization by multiplying with qf_total
+model += CAFC_val <= b * qf_total
+model += -CAFC_val <= b * qf_total # Corrected: Added second constraint for absolute value
 
 
 
@@ -52,15 +49,11 @@ model += (
     pulp.lpSum(g[i] * qn[i] for i in range(2)) - beta * pulp.lpSum(qf[j] for j in range(2)) == s - b
 )
 
-
-
-
 # 产能约束
 for j in range(2):
     model += qf[j] <= Cap[j]
 for i in range(2):
     model += qn[i] <= Cap[i+2]
-
 
 # 需求约束
 for j in range(2):
@@ -71,27 +64,64 @@ for i in range(2):
     model += qn[i] <= Dem_max[i+2]
 
 
-
 # 指定 CBC 求解器
 solver = pulp.PULP_CBC_CMD()
 
 # 求解模型
 model.solve(solver)
 
-
-# 输出结果
+# 输出结果和图表
 if model.status == pulp.LpStatusOptimal:
     print("Optimal solution found:")
     for v in model.variables():
         print(f"{v.name}: {v.varValue}")
     print(f"Objective value: {pulp.value(model.objective)}")
 
-    # ... (绘图部分与之前代码相同，使用 v.varValue 获取变量值) ...
+    # 图表 1：最优产量
+    products = ['Fuel Car 1', 'Fuel Car 2', 'NEV Car 1', 'NEV Car 2']
+    quantities = [qf[j].varValue for j in range(2)] + [qn[i].varValue for i in range(2)]
+    plt.figure(figsize=(8, 6))
+    plt.bar(products, quantities)
+    plt.xlabel("Product")
+    plt.ylabel("Quantity")
+    plt.title("Optimal Production Quantities")
+    plt.show()
+
+    # 图表 2: 积分交易情况
+    labels = 'Sold NEV Credits', 'Bought NEV Credits'
+    sizes = [s.varValue, b.varValue]
+    plt.figure(figsize=(6, 6))
+    plt.pie(sizes, labels=labels, autopct='%1.1f%%', startangle=90)
+    plt.title("NEV Credit Trading")
+    plt.show()
+
+
+    # 灵敏度分析 (示例 -  积分价格 p)
+    p_values = np.linspace(1000, 5000, 10)  #  积分价格变化范围
+    profit_values = []
+
+    for p_val in p_values:
+        model.objective = (
+            pulp.lpSum((P[j] - C[j]) * qf[j] for j in range(2)) +
+            pulp.lpSum((P[j+2] - C[j+2]) * qn[j] for j in range(2)) -
+            p_val * b + p_val * s
+        ) # 更新目标函数中的p值
+        model.solve(solver)
+        if model.status == pulp.LpStatusOptimal:
+           profit_values.append(pulp.value(model.objective))
+        else:
+            profit_values.append(None)  #  处理优化失败的情况
+
+
+    plt.figure(figsize=(8,6))
+    plt.plot(p_values, profit_values)
+    plt.xlabel("Credit Price (p)")
+    plt.ylabel("Profit")
+    plt.title("Sensitivity Analysis: Credit Price vs. Profit")
+    plt.grid(True)
+    plt.show()
 
 
 else:
     print(f"Optimization failed. Status: {model.status}, {pulp.LpStatus[model.status]}")
 
-
-
-# ... (灵敏度分析部分与之前代码类似，使用 PuLP 语法)

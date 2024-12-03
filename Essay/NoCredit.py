@@ -1,5 +1,7 @@
 import pulp
 import matplotlib.pyplot as plt
+plt.rcParams['font.sans-serif'] = ['SimHei']
+plt.rcParams['axes.unicode_minus'] = False
 
 # 车型数据
 车型列表 = ["燃油车 A", "燃油车 B", "新能源车 A", "新能源车 B"]
@@ -35,22 +37,24 @@ for i in 车型列表:
     产量_结果[i] = x[i].varValue
 print("最优总利润:", pulp.value(model.objective))
 
-
 # 创建图表
-# 产量柱状图
-plt.figure(figsize=(8, 6))
-plt.bar(产量_结果.keys(), 产量_结果.values())
-plt.xlabel("车型")
-plt.ylabel("产量 (辆)")
-plt.title("各车型产量")
-plt.savefig("产量柱状图.png")
-plt.show()
-
 # 利润饼图
 利润 = [(售价[i] - 成本[i]) * 产量_结果[i] for i in 车型列表]
 plt.figure(figsize=(8, 6))
-plt.pie(利润, labels=车型列表, autopct='%1.1f%%', startangle=90)
-plt.title("各车型利润占比")
+patches, texts, autotexts = plt.pie(利润, labels=车型列表, autopct='%1.1f%%', startangle=90, textprops={'fontsize': 10})
+plt.title("各车型利润占比", fontsize=14)
+plt.tight_layout()
 plt.savefig("利润饼图.png")
 plt.show()
 
+# 产量柱状图
+colors = [patch.get_facecolor() for patch in patches]
+plt.figure(figsize=(8, 6))
+plt.bar(产量_结果.keys(), 产量_结果.values(), color=colors)
+plt.xlabel("车型", fontsize=12)
+plt.ylabel("产量 (辆)", fontsize=12)
+plt.title("各车型产量", fontsize=14)
+plt.xticks(rotation=45, ha="right")
+plt.tight_layout()
+plt.savefig("产量柱状图.png")
+plt.show()
